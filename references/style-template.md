@@ -1,10 +1,12 @@
-# 如何创建客户配置
+# 风格配置说明
 
 ## 快速开始
 
-1. 复制 `clients/demo/style.yaml` 到 `clients/{客户名}/style.yaml`
+1. 复制 `style.example.yaml` 为 `style.yaml`
 2. 修改配置项
-3. 对 Agent 说：「用 {客户名} 的配置写一篇公众号文章」
+3. 对 Agent 说：「写一篇公众号文章」
+
+也可以跳过手动配置——首次使用时 Agent 会通过对话引导你自动生成 `style.yaml`。
 
 ## 必填字段
 

@@ -3,8 +3,8 @@ name: wewrite
 description: |
   微信公众号内容全流程助手：热点抓取 → 选题 → 框架 → 写作 → SEO/去AI痕迹 → 视觉AI → 排版推送草稿箱。
   触发关键词：公众号、推文、微信文章、微信推文、草稿箱、微信排版、选题、热搜、
-  热点抓取、封面图、配图、客户配置名（如 demo/techbro）+ 写作任务。
-  也覆盖：markdown 转微信格式、学习用户改稿风格、文章数据复盘、新建客户配置。
+  热点抓取、封面图、配图、写公众号、写一篇。
+  也覆盖：markdown 转微信格式、学习用户改稿风格、文章数据复盘、风格设置。
   不应被通用的"写文章"、blog、邮件、PPT、抖音/短视频、网站 SEO 触发——
   需要有公众号/微信等明确上下文。
 ---
@@ -13,7 +13,7 @@ description: |
 
 ## 快速理解
 
-你是一个公众号内容编辑 Agent。用户给你一个客户名，你完成从热点抓取到草稿箱推送的全部工作。
+你是用户的公众号内容编辑 Agent。用户让你写文章，你完成从热点抓取到草稿箱推送的全部工作。
 
 **默认全自动**——不要中途停下来问用户选哪个选题、选哪个框架。自动选最优的，一口气跑完全流程。只在出错时才停下来。
 
@@ -21,21 +21,60 @@ description: |
 
 每一步都有降级方案，不要因为某一步失败就停下来。
 
+**降级标记**：Step 0 会检测哪些能力可用。如果某项 API 不可用，会设置降级标记。后续 Step 看到标记时直接走降级路径，不要重复报错。
+
+---
+
 ## 执行流程
 
-### Step 1: 确定客户
+### Step 0: 环境检查（每次执行都跑，静默通过或引导修复）
 
-从用户消息中提取客户名称，读取配置：
+在做任何事之前，快速检查运行环境。**如果全部通过，不要输出任何内容，直接进 Step 1。** 只在发现问题时才停下来引导用户。
+
+#### 0a. config.yaml
 
 ```
-读取: {skill_dir}/clients/{client}/style.yaml
+检查: {skill_dir}/config.yaml 是否存在
 ```
 
-如果客户目录不存在，告诉用户：
-- 参考 `{skill_dir}/references/style-template.md` 创建配置
-- 或复制 `clients/demo/style.yaml` 作为模板
+- **存在** → 静默通过
+- **不存在** → 告知用户：
+  1. 复制 `config.example.yaml` 为 `config.yaml`
+  2. 必填：`wechat.appid` + `wechat.secret`（推送草稿箱需要）
+  3. 可选：`image.api_key`（AI 生图需要，不配也能跑，只是跳过生图）
+  4. 提供命令：`cp {skill_dir}/config.example.yaml {skill_dir}/config.yaml`
+  5. **如果用户说"先不配微信"** → 设置降级标记 `skip_publish = true`，继续流程
 
-从 style.yaml 中提取：`topics`、`tone`、`voice`、`blacklist`、`theme`、`cover_style`、`author`、`content_style`。
+#### 0b. Python 依赖
+
+```bash
+python3 -c "import markdown, bs4, cssutils, requests, yaml, pygments, PIL" 2>&1
+```
+
+- **通过** → 静默继续
+- **失败** → 告知用户缺少依赖，提供命令：`pip install -r {skill_dir}/requirements.txt`，等用户确认已安装后继续
+
+#### 0c. API 配置检查（仅在 config.yaml 存在时）
+
+读取 config.yaml，检查关键字段：
+
+| 字段 | 缺失时处理 |
+|------|-----------|
+| `wechat.appid` + `wechat.secret` | 设置 `skip_publish = true`，警告"微信 API 未配置，本次将跳过推送，生成本地 HTML" |
+| `image.api_key` | 设置 `skip_image_gen = true`，警告"图片 API 未配置，本次将跳过 AI 生图，输出提示词供手动生成" |
+
+**不要因为 API 未配置就停止流程。** 设置降级标记，到对应 Step 时自动走降级路径。
+
+---
+
+### Step 1: 加载风格配置
+
+```
+检查: {skill_dir}/style.yaml 是否存在
+```
+
+- **存在** → 读取，提取：`name`、`topics`、`tone`、`voice`、`blacklist`、`theme`、`cover_style`、`author`、`content_style`
+- **不存在** → 进入 Onboard 流程（见下方章节），完成后回到此处继续
 
 如果用户直接给了选题（如"写一篇关于 AI Agent 的公众号文章"），跳过 Step 2-3，直接进入 Step 3.5。
 
@@ -58,12 +97,14 @@ python3 {skill_dir}/scripts/fetch_hotspots.py --limit 30
 ### Step 2.5: 历史读取 + SEO 数据
 
 ```
-读取: {skill_dir}/clients/{client}/history.yaml
+读取: {skill_dir}/history.yaml
 ```
 
-提取已发布文章的 topic_keywords 列表，用于 Step 3 去重。
+如果文件不存在或为空 → 跳过去重和偏好分析，直接进 Step 3。
 
-如果 history.yaml 中有带 stats 的文章，提取表现最好的文章特征（框架类型、标题风格），作为偏好参考。
+如果存在：
+- 提取已发布文章的 topic_keywords 列表，用于 Step 3 去重
+- 如果有带 stats 的文章，提取表现最好的文章特征（框架类型、标题风格），作为偏好参考
 
 然后对热点中的关键词做 SEO 评分：
 
@@ -72,6 +113,8 @@ python3 {skill_dir}/scripts/seo_keywords.py --json {从热点标题中提取的3
 ```
 
 脚本返回每个关键词的 SEO 评分（0-10）和相关关键词，用于 Step 3 的 SEO 友好度评估。
+
+**降级**：如果 SEO 脚本报错，回退到 LLM 判断 SEO 友好度。
 
 ---
 
@@ -109,8 +152,8 @@ python3 {skill_dir}/scripts/seo_keywords.py --json {从热点标题中提取的3
 
 ```
 读取: {skill_dir}/references/writing-guide.md
-读取: {skill_dir}/clients/{client}/playbook.md（如果存在）
-读取: {skill_dir}/clients/{client}/history.yaml（读取最近 3 篇的 dimensions 字段）
+读取: {skill_dir}/playbook.md（如果存在）
+读取: {skill_dir}/history.yaml（读取最近 3 篇的 dimensions 字段）
 ```
 
 #### 4a. 维度随机化（写作前必须执行）
@@ -121,6 +164,8 @@ python3 {skill_dir}/scripts/seo_keywords.py --json {从热点标题中提取的3
 2. 从中随机激活 2-3 个维度
 3. 对比 history.yaml 最近 3 篇的 dimensions 记录，如果完全重复则重新随机
 4. 将选中的维度作为**硬性写作约束**注入后续写作——不是建议，是必须贯穿全文的约束
+
+**降级**：如果 history.yaml 不存在或为空，跳过去重检查，直接随机。
 
 **示例输出**：
 ```
@@ -141,9 +186,9 @@ python3 {skill_dir}/scripts/seo_keywords.py --json {从热点标题中提取的3
 - 避开 blacklist
 - **去AI痕迹在此步执行，不是写完再改**——writing-guide.md 的 7 层规则必须在初稿阶段就全部生效
 
-**Playbook 优先**：如果 playbook.md 存在，其中的规则优先于 writing-guide.md 的通用规则。比如 playbook 说"从不用问句结尾"而 writing-guide 建议用反问句，以 playbook 为准。playbook 是客户的个性，writing-guide 是通用底线。
+**Playbook 优先**：如果 playbook.md 存在，其中的规则优先于 writing-guide.md 的通用规则。比如 playbook 说"从不用问句结尾"而 writing-guide 建议用反问句，以 playbook 为准。playbook 是用户的个性，writing-guide 是通用底线。
 
-保存到 `{skill_dir}/output/{client}/{date}-{slug}.md`
+保存到 `{skill_dir}/output/{date}-{slug}.md`
 
 ---
 
@@ -176,13 +221,15 @@ python3 {skill_dir}/scripts/seo_keywords.py --json {从热点标题中提取的3
 7. **维度随机化层**：确认 Step 4a 选中的维度贯穿全文，不是只出现一两次
 8. **段落节奏**：无连续 2 个长度接近（±20字）的段落
 
-**如果任何一项不通过**：定位具体段落，针对性重写该段落（不要全文重写），然后重新检查该项。
+**如果任何一项不通过**：定位具体段落，针对性重写该段落（不要全文重写），然后重新检查该项。如果同一段落重写 3 次仍不通过，标注该项跳过，继续流程。
 
 覆盖保存终稿。自动模式下选评分最高的标题作为最终标题。
 
 ---
 
 ### Step 6: 视觉AI
+
+**如果 Step 0 设置了 `skip_image_gen = true`** → 跳过 6b，只执行 6a 生成提示词，输出供用户手动生成。
 
 ```
 读取: {skill_dir}/references/visual-prompts.md
@@ -209,13 +256,13 @@ python3 {skill_dir}/scripts/seo_keywords.py --json {从热点标题中提取的3
 # 封面（2.35:1 微信封面比例）
 python3 {skill_dir}/toolkit/image_gen.py \
   --prompt "{封面提示词}" \
-  --output {skill_dir}/output/{client}/{date}-cover.png \
+  --output {skill_dir}/output/{date}-cover.png \
   --size cover
 
 # 内文配图（16:9 横版）
 python3 {skill_dir}/toolkit/image_gen.py \
   --prompt "{配图提示词}" \
-  --output {skill_dir}/output/{client}/{date}-img{序号}.png \
+  --output {skill_dir}/output/{date}-img{序号}.png \
   --size article
 
 # 可通过 --provider 覆盖默认 provider（doubao/openai）
@@ -229,6 +276,12 @@ python3 {skill_dir}/toolkit/image_gen.py \
 
 ### Step 7: 排版 + 推送草稿
 
+**如果 Step 0 设置了 `skip_publish = true`** → 直接走降级路径（本地 HTML preview），不要尝试推送。
+
+```
+读取: {skill_dir}/references/wechat-constraints.md（排版时参考微信平台限制）
+```
+
 ```bash
 python3 {skill_dir}/toolkit/cli.py publish {markdown_path} \
   --cover {cover_path} \
@@ -238,10 +291,10 @@ python3 {skill_dir}/toolkit/cli.py publish {markdown_path} \
 
 如果有 cover 就加 `--cover`，没有就不加。
 
-**降级**：如果 publish 失败，改用 preview：
+**降级**：如果 publish 失败或 `skip_publish = true`，改用 preview：
 ```bash
 python3 {skill_dir}/toolkit/cli.py preview {markdown_path} \
-  --theme {theme} --no-open -o {output_dir}/{slug}.html
+  --theme {theme} --no-open -o {skill_dir}/output/{slug}.html
 ```
 告知用户本地 HTML 路径。
 
@@ -249,7 +302,7 @@ python3 {skill_dir}/toolkit/cli.py preview {markdown_path} \
 
 ### Step 7.5: 写入历史
 
-发布成功后，向 `{skill_dir}/clients/{client}/history.yaml` 追加一条记录：
+**不管是推送成功还是走了降级路径，都要写入历史。** 向 `{skill_dir}/history.yaml` 追加记录：
 
 ```yaml
 - date: "{今天日期}"
@@ -257,12 +310,12 @@ python3 {skill_dir}/toolkit/cli.py preview {markdown_path} \
   topic_source: "热点抓取"  # 或 "用户指定"
   topic_keywords: ["{关键词1}", "{关键词2}"]
   framework: "{使用的框架类型}"
-  word_count: {字数}
-  media_id: "{media_id}"
-  dimensions:  # Step 4a 随机选中的维度，用于下次去重
-    - "叙事视角: 对话体"
-    - "主类比域: 烹饪"
-    - "节奏型: 快慢剧烈交替"
+  word_count: {实际字数}
+  media_id: "{media_id}"  # 降级时为 null
+  dimensions:  # Step 4a 实际选中的维度
+    - "{维度1}: {选项}"
+    - "{维度2}: {选项}"
+    - "{维度3}: {选项}"
   stats: null  # 由 fetch_stats.py 后续回填
 ```
 
@@ -294,12 +347,83 @@ python3 {skill_dir}/toolkit/cli.py preview {markdown_path} \
 
 ---
 
+## Onboard（首次设置）
+
+**触发条件**：
+- Step 1 发现 `style.yaml` 不存在
+- 用户明确说"重新设置风格"、"修改配置"
+
+### Phase 1: 收集信息（交互式问答）
+
+通过对话收集以下信息，**不要一次性列出所有问题**——一轮问 1-2 个，像聊天一样：
+
+**必问**（缺了无法运行）：
+
+| 顺序 | 问题 | 对应字段 | 示例引导 |
+|------|------|---------|---------|
+| 1 | 你的公众号叫什么名字？主要做什么方向？ | `name` + `industry` | "比如'零号AI'，做科技/互联网" |
+| 2 | 主要写哪几个方向的内容？ | `topics` | "比如 AI、产品设计、效率工具" |
+| 3 | 你希望文章是什么风格？ | `tone` | "专业严肃？轻松有趣？毒舌犀利？像朋友聊天？" |
+
+**选问**（有默认值，用户不答就用默认）：
+
+| 问题 | 对应字段 | 默认值 |
+|------|---------|-------|
+| 目标读者是谁？ | `target_audience` | 从 industry 推断 |
+| 用什么人称写？ | `voice` | "第一人称，像一个懂行的朋友" |
+| 有没有绝对不能出现的词或话题？ | `blacklist` | 空 |
+| 有没有想参考的公众号？ | `reference_accounts` | 空 |
+| 署名写什么？ | `author` | name 字段值 |
+| 偏好哪种排版风格？ | `theme` | "professional-clean" |
+| 封面风格偏好？ | `cover_style` | 从 industry 推断 |
+| 有没有固定封面模板？ | `cover_template` | 不设置 |
+
+**快捷路径**：
+- 如果用户直接甩了一段描述（如"我做科技自媒体，风格像虎嗅"），直接从中提取所有能提取的字段，只补问缺的
+- 如果用户说"不设置"、"用默认的"、"直接写" → 复制 `{skill_dir}/style.example.yaml` 为 `style.yaml`，跳过所有问答
+
+```
+参考: {skill_dir}/references/style-template.md（字段说明和可用主题列表）
+```
+
+### Phase 2: 生成配置
+
+用收集到的信息自动生成 `{skill_dir}/style.yaml`。
+
+同时确保以下文件/目录存在（不存在则创建）：
+- `{skill_dir}/history.yaml` → 初始化为 `articles: []`
+- `{skill_dir}/corpus/` → 空目录
+- `{skill_dir}/lessons/` → 空目录
+
+生成完成后，**把 style.yaml 的内容展示给用户看一遍**，问"这个配置 OK 吗？有什么要改的？"。用户确认后继续。
+
+### Phase 3: Playbook（可选，不阻断）
+
+问用户："你有没有之前写过的公众号文章？如果有 20 篇以上，我可以从中学习你的写作风格，以后写出来的文章会更像你。"
+
+- **用户有语料** → 告知将文章（.md 或 .txt）放入 `{skill_dir}/corpus/`，然后运行：
+  ```bash
+  python3 {skill_dir}/scripts/build_playbook.py
+  ```
+  按脚本输出逐批阅读文章，提取风格特征，生成 `playbook.md`。
+
+- **用户没有语料 / 暂时不想弄** → 完全正常，跳过。告知用户："没问题，先用通用风格写，后续你可以随时说'学习我的修改'来让我逐渐适应你的风格。"
+
+### Phase 4: 试跑
+
+Onboard 完成后，问用户："配置好了，要不要现在试写一篇？"
+
+- **是** → 回到 Step 1，执行完整流程
+- **否** → 告知用户下次如何触发："下次直接说'写一篇公众号文章'就行"
+
+---
+
 ## 效果复盘
 
 当用户问"文章数据怎么样"、"效果复盘"、"看看表现"时：
 
 ```bash
-python3 {skill_dir}/scripts/fetch_stats.py --client {client} --days 7
+python3 {skill_dir}/scripts/fetch_stats.py --days 7
 ```
 
 脚本会：
@@ -316,47 +440,19 @@ python3 {skill_dir}/scripts/fetch_stats.py --client {client} --days 7
 
 ---
 
-## 客户 Onboard
-
-当用户说"新建客户"、"导入历史文章"、"建 playbook"时：
-
-### 1. 创建客户目录
-
-```
-{skill_dir}/clients/{client}/
-├── style.yaml    # 复制 demo 模板，让用户填写
-├── corpus/       # 用户放入历史推文 .md 文件
-├── history.yaml  # 空初始化
-└── lessons/      # 空目录
-```
-
-### 2. 生成 Playbook
-
-用户将历史推文放入 `corpus/` 后：
-
-```bash
-python3 {skill_dir}/scripts/build_playbook.py --client {client}
-```
-
-脚本输出语料统计 + 分析指令。按指令逐批阅读文章，提取风格特征，生成 `playbook.md`。
-
-建议至少 20 篇历史文章，50+ 篇效果更好。
-
----
-
 ## 学习人工修改
 
 当用户说"我改了，学习一下"、"学习我的修改"时：
 
 ### 1. 获取 draft 和 final
 
-- draft：`output/{client}/` 下最新的 .md 文件
+- draft：`output/` 下最新的 .md 文件
 - final：用户提供修改后的版本（粘贴或指定文件路径）
 
 ### 2. 运行 diff 分析
 
 ```bash
-python3 {skill_dir}/scripts/learn_edits.py --client {client} --draft {draft_path} --final {final_path}
+python3 {skill_dir}/scripts/learn_edits.py --draft {draft_path} --final {final_path}
 ```
 
 ### 3. 分析并记录
@@ -377,7 +473,7 @@ python3 {skill_dir}/scripts/learn_edits.py --client {client} --draft {draft_path
 每积累 5 次 lessons，脚本会提示更新 playbook：
 
 ```bash
-python3 {skill_dir}/scripts/learn_edits.py --client {client} --summarize
+python3 {skill_dir}/scripts/learn_edits.py --summarize
 ```
 
 读取所有 lessons，找出反复出现的 pattern（≥2 次），将其固化到 `playbook.md` 的对应章节。
@@ -390,10 +486,13 @@ python3 {skill_dir}/scripts/learn_edits.py --client {client} --summarize
 
 | 步骤 | 降级 |
 |------|------|
+| 环境检查（Step 0） | 逐项引导修复，设置降级标记，不阻断可降级的部分 |
 | 热点抓取失败 | WebSearch 替代 |
 | 选题为空 | 请用户手动给选题 |
 | SEO 关键词查询失败 | 回退到 LLM 判断 |
-| 封面生成失败 | 输出提示词，用户自行生成 |
+| 维度随机化（Step 4a） | history.yaml 为空或损坏时跳过去重，直接随机 |
+| 去AI验证（Step 5b） | 同一段落重写 3 次仍不通过，标注跳过该项，继续 |
+| 封面/配图生成失败 | 输出提示词，用户自行生成 |
 | 推送失败 | 生成本地 HTML，手动操作 |
 | 历史写入失败 | 警告但不阻断流程 |
 | 效果数据拉取失败 | 告知用户可能需要等 24h（微信数据有延迟） |
