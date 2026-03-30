@@ -53,6 +53,20 @@ allowed-tools:
      - 读取 `writing-config.yaml`（如存在），检查是否有 AI 特征参数（emotional_arc: flat、paragraph_rhythm: structured、closing_style: summary）
      - 读取 `history.yaml` 最近 5 篇，检查 persona 使用和 WebSearch 降级情况
   4. 综合输出自然语言报告 + 按优先级排序的改进建议
+- 用户说"优化写作参数"/"优化参数"/"跑优化" → 执行以下流程：
+  1. 读取 `{skill_dir}/writing-config.yaml`（不存在则从 `writing-config.example.yaml` 复制）
+  2. 用户可指定迭代次数（默认 3），如"优化参数跑 5 轮"
+  3. **迭代循环**（每轮）：
+     a. 用当前 writing-config.yaml 参数写一篇 500 字测试短文（主题：用户指定或"AI Agent 行业观察"）
+     b. 保存到 `{skill_dir}/output/optimize-test.md`
+     c. `python3 {skill_dir}/scripts/humanness_score.py {skill_dir}/output/optimize-test.md --json --tier3 {agent_tier3_score}`
+     d. Agent 做 Tier 3 分析（读测试短文，评估风格漂移/密度波浪/连贯性打破/整体人感，输出 0-1 分数传入 --tier3）
+     e. 解析 JSON 中 `param_scores`，找到得分最低的 1-2 个参数
+     f. 调整 writing-config.yaml 中对应参数（方向：让该维度更"人类"）
+     g. 记录本轮：迭代编号、composite_score、调整的参数、旧值→新值
+  4. 循环结束后，保留 composite_score 最低（最人类）的 writing-config.yaml
+  5. 输出优化报告：起始分 → 最终分，每轮调整，最终参数
+  6. 提示："参数已优化。下次写文章时自动使用新参数。"
 - 用户说"更新"/"更新 WeWrite"/"升级" → 在 `{skill_dir}` 执行 `git pull origin main`，完成后告知版本变化
 
 ---
@@ -220,6 +234,19 @@ WebSearch: "{选题关键词} 数据 报告 2025 2026"
 
 不通过 → 定向重写该段落。3 次仍不过 → 标注跳过。
 
+**5b-2. 脚本验证**（补充逐项检查）：
+
+Agent 在 5b 逐项检查时同步完成 Tier 3 评估（风格漂移、密度波浪、连贯性打破、整体人感），产出 0-1 分数。
+
+```bash
+python3 {skill_dir}/scripts/humanness_score.py {article_path} --json --tier3 {agent_tier3_score}
+```
+
+解读 JSON 中 `composite_score`：
+- < 30 → 通过，继续 Step 6
+- 30-50 → 查看 `param_scores` 中最低分项，定向重写对应段落
+- \> 50 → 重大问题，逐个低分项修复，最多 3 轮
+
 ---
 
 ### Step 6: 视觉 AI
@@ -311,6 +338,7 @@ python3 {skill_dir}/toolkit/cli.py preview {markdown} --theme {theme} --no-open 
 | 学习我的修改 | `读取: {skill_dir}/references/learn-edits.md` |
 | 做一个小绿书/图片帖 | `python3 {skill_dir}/toolkit/cli.py image-post img1.jpg img2.jpg -t "标题"` |
 | 诊断配置 / 检查反AI / 为什么AI检测没过 | `python3 {skill_dir}/scripts/diagnose.py --json` + LLM 交叉分析 |
+| 优化写作参数 / 优化参数 | 迭代循环：写测试短文 → 打分 → 调参（见辅助功能） |
 
 ---
 
