@@ -259,7 +259,7 @@ class GeminiProvider(ImageProvider):
             inline_data = part.get("inlineData")
             if inline_data and inline_data.get("mimeType", "").startswith("image/"):
                 return base64.b64decode(inline_data["data"])
-        raise ValueError(f"No image found in Gemini response parts")
+        raise ValueError("No image found in Gemini response parts")
 
 
 # --- Provider registry ---
@@ -269,6 +269,7 @@ PROVIDERS = {
     "openai": OpenAIProvider,
     "gemini": GeminiProvider,
 }
+
 
 def _build_provider(config: dict) -> ImageProvider:
     """Build an ImageProvider from config.yaml's image section."""
